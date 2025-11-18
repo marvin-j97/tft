@@ -3,51 +3,34 @@
 // (found in the LICENSE-* files in the repository)
 
 use crate::{
-    checksum_writer::ChecksummedWriter,
     toc::{
         entry::{SectionName, TocEntry},
         writer::TocWriter,
     },
     trailer::writer::TrailerWriter,
-    Checksum,
 };
-use std::{
-    fs::File,
-    io::{BufWriter, Seek, Write},
-    path::PathBuf,
-};
+use std::io::{Seek, Write};
 
 /// Archive writer
 #[allow(clippy::struct_field_names)]
-pub struct Writer {
-    writer: ChecksummedWriter<BufWriter<File>>,
+pub struct Writer<W: Write + Seek> {
+    writer: W,
     last_section_pos: u64,
     section_name: SectionName,
     toc: Vec<TocEntry>,
 }
 
-impl Writer {
-    /// Creates a new writer.
-    ///
-    /// # Errors
-    ///
-    /// Returns error, if an IO error occurred.
-    pub fn new_at_path(path: impl Into<PathBuf>) -> crate::Result<Self> {
-        let path = std::path::absolute(path.into())?;
-        let file = File::create_new(&path)?;
-        Ok(Self::from_writer(BufWriter::new(file)))
-    }
-
+impl<W: Write + Seek> Writer<W> {
     /// Returns a mutable reference to the underlying writer.
-    pub fn get_mut(&mut self) -> impl Write + Seek + '_ {
-        self.writer.inner()
+    pub fn get_mut(&mut self) -> &mut W {
+        &mut self.writer
     }
 
     /// Creates a new writer with the given I/O writer.
     #[must_use]
-    pub fn from_writer(writer: BufWriter<File>) -> Self {
+    pub fn from_writer(writer: W) -> Self {
         Self {
-            writer: ChecksummedWriter::new(writer),
+            writer,
             last_section_pos: 0,
             section_name: SectionName::new(),
             toc: Vec::new(),
@@ -55,7 +38,7 @@ impl Writer {
     }
 }
 
-impl std::io::Write for Writer {
+impl<W: Write + Seek> std::io::Write for Writer<W> {
     fn flush(&mut self) -> std::io::Result<()> {
         self.writer.flush()
     }
@@ -65,7 +48,7 @@ impl std::io::Write for Writer {
     }
 }
 
-impl Writer {
+impl<W: Write + Seek> Writer<W> {
     /// Starts the first named section.
     ///
     /// # Errors
@@ -78,7 +61,7 @@ impl Writer {
     }
 
     fn append_toc_entry(&mut self) -> std::io::Result<()> {
-        let file_pos = self.writer.inner().stream_position()?;
+        let file_pos = self.writer.stream_position()?;
 
         if file_pos > 0 {
             let name = std::mem::take(&mut self.section_name);
@@ -94,15 +77,12 @@ impl Writer {
         Ok(())
     }
 
-    fn append_trailer(
-        mut writer: &mut ChecksummedWriter<BufWriter<File>>,
-        toc: &[TocEntry],
-    ) -> crate::Result<()> {
+    fn append_trailer(mut writer: &mut W, toc: &[TocEntry]) -> crate::Result<()> {
         // Write ToC
-        let toc_pos = writer.inner().stream_position()?;
+        let toc_pos = writer.stream_position()?;
         let toc_checksum = TocWriter::write_into(&mut writer, toc)?;
 
-        let after_toc_pos = writer.inner().stream_position()?;
+        let after_toc_pos = writer.stream_position()?;
         let toc_len = after_toc_pos - toc_pos;
 
         // Write trailer
@@ -111,23 +91,35 @@ impl Writer {
 
     /// Finishes the file.
     ///
-    /// Returns a full-file checksum.
-    ///
     /// # Errors
     ///
     /// Returns error, if an IO error occurred.
     #[allow(clippy::missing_panics_doc)]
-    pub fn finish(mut self) -> crate::Result<Checksum> {
+    pub fn finish(mut self) -> crate::Result<()> {
+        log::trace!("Finishing archive");
+
         self.append_toc_entry()?;
         Self::append_trailer(&mut self.writer, &self.toc)?;
-
-        // Flush & sync
-        log::trace!("Syncing file");
-
         self.writer.flush()?;
-        self.writer.inner().get_mut().sync_all()?;
 
-        Ok(self.writer.checksum())
+        Ok(())
+    }
+
+    /// Finishes the file.
+    ///
+    /// Returns the inner writer.
+    ///
+    /// # Errors
+    ///
+    /// Returns error, if an IO error occurred.
+    pub fn into_inner(mut self) -> crate::Result<W> {
+        log::trace!("Finishing archive");
+
+        self.append_toc_entry()?;
+        Self::append_trailer(&mut self.writer, &self.toc)?;
+        self.writer.flush()?;
+
+        Ok(self.writer)
     }
 }
 
@@ -137,6 +129,7 @@ mod tests {
     use super::*;
     use crate::toc::reader::TocReader;
     use crate::trailer::reader::TrailerReader;
+    use std::fs::File;
     use std::io::Write;
     use test_log::test;
 
@@ -145,8 +138,11 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("file.sfa");
 
-        let writer = Writer::new_at_path(&path)?;
+        let mut file = File::create(&path)?;
+        let writer = Writer::from_writer(&mut file);
         writer.finish()?;
+        file.sync_all()?;
+        drop(file);
 
         let mut reader = File::open(&path)?;
         let trailer = TrailerReader::from_reader(&mut reader)?;
@@ -167,9 +163,12 @@ mod tests {
 
         let data = b"hello world";
 
-        let mut writer = Writer::new_at_path(&path)?;
+        let mut file = File::create(&path)?;
+        let mut writer = Writer::from_writer(&mut file);
         writer.write_all(data)?;
         writer.finish()?;
+        file.sync_all()?;
+        drop(file);
 
         let mut reader = File::open(&path)?;
         let trailer = TrailerReader::from_reader(&mut reader)?;
@@ -196,13 +195,16 @@ mod tests {
         let data2 = b"hello world2";
         let data3 = b"hello world3";
 
-        let mut writer = Writer::new_at_path(&path)?;
+        let mut file = File::create(&path)?;
+        let mut writer = Writer::from_writer(&mut file);
         writer.write_all(data)?;
         writer.start("section1")?;
         writer.write_all(data2)?;
         writer.start("section2")?;
         writer.write_all(data3)?;
         writer.finish()?;
+        file.sync_all()?;
+        drop(file);
 
         let mut reader = File::open(&path)?;
         let trailer = TrailerReader::from_reader(&mut reader)?;

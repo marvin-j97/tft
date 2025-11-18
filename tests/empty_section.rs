@@ -1,19 +1,24 @@
 use sfa::{Reader, Writer};
-use std::io::{Read, Write};
+use std::{
+    fs::File,
+    io::{Read, Write},
+};
 
 #[test]
 pub fn empty_section() -> Result<(), sfa::Error> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("cherry_pie");
-    // let path = std::path::Path::new("test_fixture/cherry_pie_broken");
 
-    let mut writer = Writer::new_at_path(&path)?;
+    let mut file = File::create(&path)?;
+    let mut writer = Writer::from_writer(&mut file);
     writer.start("Verse 1")?;
     writer.write_all(b"Glazed eyes and cherry pie\n")?;
     writer.start("Verse 2")?;
     writer.start("Chorus 2")?;
     writer.write_all(b"Youth is running out, we finally feel it now\n")?;
     writer.finish()?;
+    file.sync_all()?;
+    drop(file);
 
     let reader = Reader::new(&path)?;
     {
@@ -52,13 +57,16 @@ pub fn empty_section_name() -> Result<(), sfa::Error> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("cherry_pie");
 
-    let mut writer = Writer::new_at_path(&path)?;
+    let mut file = File::create(&path)?;
+    let mut writer = Writer::from_writer(&mut file);
     writer.start("Verse 1")?;
     writer.write_all(b"Glazed eyes and cherry pie\n")?;
     writer.start("Verse 2")?;
     writer.start("")?;
     writer.write_all(b"Youth is running out, we finally feel it now\n")?;
     writer.finish()?;
+    file.sync_all()?;
+    drop(file);
 
     let reader = Reader::new(&path)?;
     {

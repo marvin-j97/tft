@@ -41,6 +41,13 @@ impl TocEntry {
     }
 
     #[doc(hidden)]
+    pub fn reader(&self, path: &Path) -> std::io::Result<impl std::io::Read> {
+        let mut file = File::open(path)?;
+        file.seek(std::io::SeekFrom::Start(self.pos))?;
+        Ok(file.take(self.len))
+    }
+
+    #[doc(hidden)]
     pub fn buf_reader(&self, path: &Path) -> std::io::Result<impl std::io::BufRead> {
         let mut file = BufReader::new(File::open(path)?);
         file.seek(std::io::SeekFrom::Start(self.pos))?;

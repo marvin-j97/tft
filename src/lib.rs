@@ -8,14 +8,21 @@
 //!
 //! ```
 //! use sfa::{Writer, Reader};
-//! use std::io::{Read, Write};
+//! use std::{
+//!   fs::File,
+//!   io::{BufWriter, Read, Write}
+//! };
 //! # let dir = tempfile::tempdir()?;
 //! # let path = dir.path().join("hello.sfa");
 //!
-//! let mut writer = Writer::new_at_path(&path)?;
+//! let file = File::create(&path)?;
+//! let mut file = BufWriter::new(file);
+//! let mut writer = Writer::from_writer(&mut file);
 //! writer.start("Section 1")?;
 //! writer.write_all(b"Hello world!\n")?;
-//! let _file_checksum = writer.finish()?;
+//! writer.finish()?;
+//! file.get_mut().sync_all()?;
+//! drop(file);
 //! // If on Unix, you probably want to fsync the directory here
 //!
 //! let reader = Reader::new(&path)?;
